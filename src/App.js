@@ -1,24 +1,24 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { FileText, Users, Plus, Trash2, Edit3, Code, FileCode, Download, Copy, Check } from 'lucide-react';
+import { FileText, Users, Plus, Trash2, Edit3, FileCode, Download, Copy, Check, Share2 } from 'lucide-react';
+import { database } from './firebase';
+import { ref, onValue, set, push, remove, update } from 'firebase/database';
 
 function App() {
-  const [documents, setDocuments] = useState([
-    { id: '1', name: 'Project Proposal.md', content: '# Project Proposal\n\nStart writing your project proposal here...', lastEdited: new Date(), type: 'markdown' },
-    { id: '2', name: 'app.js', content: '// JavaScript Code\nconst greeting = "Hello, World!";\nconsole.log(greeting);', lastEdited: new Date(), type: 'javascript' }
-  ]);
-  const [activeDocId, setActiveDocId] = useState('1');
+  const [documents, setDocuments] = useState([]);
+  const [activeDocId, setActiveDocId] = useState(null);
   const [content, setContent] = useState('');
-  const [users, setUsers] = useState([
-    { id: 'you', name: 'You', color: '#3b82f6', cursor: 0, typing: false }
-  ]);
-  const [userName, setUserName] = useState('You');
+  const [users, setUsers] = useState([]);
+  const [userName, setUserName] = useState('');
+  const [userId, setUserId] = useState('');
   const [isEditingName, setIsEditingName] = useState(false);
   const [copied, setCopied] = useState(false);
   const [showNewDocModal, setShowNewDocModal] = useState(false);
   const [newDocName, setNewDocName] = useState('');
   const [newDocType, setNewDocType] = useState('text');
+  const [isLoading, setIsLoading] = useState(true);
+  const [shareLink, setShareLink] = useState('');
   const textareaRef = useRef(null);
-  const simulatedUserTimeoutRef = useRef(null);
+  const isUpdatingFromFirebase = useRef(false);
 
   const fileTemplates = {
     javascript: '// JavaScript File\n\nfunction main() {\n  console.log("Hello, World!");\n}\n\nmain();',
@@ -40,59 +40,149 @@ function App() {
     text: '.txt'
   };
 
-  useEffect(() => {
-    const doc = documents.find(d => d.id === activeDocId);
-    if (doc) {
-      setContent(doc.content);
-    }
-  }, [activeDocId, documents]);
+  const colors = ['#3b82f6', '#10b981', '#f59e0b', '#8b5cf6', '#ec4899', '#06b6d4'];
 
+  // Initialize user on mount
   useEffect(() => {
-    const simulateUser = () => {
-      if (Math.random() > 0.6) {
-        setUsers(prev => {
-          const otherUsers = prev.filter(u => u.id !== 'you');
-          if (otherUsers.length === 0 && Math.random() > 0.5) {
-            return [...prev, {
-              id: 'user2',
-              name: 'Alex',
-              color: '#10b981',
-              cursor: Math.floor(Math.random() * content.length),
-              typing: Math.random() > 0.5
-            }];
-          } else if (otherUsers.length > 0) {
-            return prev.map(u => 
-              u.id !== 'you' ? { ...u, typing: Math.random() > 0.5 } : u
-            );
-          }
-          return prev;
-        });
+    const id = 'user_' + Math.random().toString(36).substr(2, 9);
+    setUserId(id);
+    const name = 'User_' + id.substr(-4);
+    setUserName(name);
+  }, []);
+
+  // Listen to documents list
+  useEffect(() => {
+    const docsRef = ref(database, 'documents');
+    const unsubscribe = onValue(docsRef, (snapshot) => {
+      const data = snapshot.val();
+      if (data) {
+        const docsList = Object.keys(data).map(key => ({
+          id: key,
+          ...data[key]
+        }));
+        setDocuments(docsList);
+        if (!activeDocId && docsList.length > 0) {
+          setActiveDocId(docsList[0].id);
+        }
+      } else {
+        // Create initial documents
+        createInitialDocuments();
       }
+      setIsLoading(false);
+    });
+
+    return () => unsubscribe();
+  }, []);
+
+  const createInitialDocuments = async () => {
+    const doc1 = {
+      name: 'Project Proposal.md',
+      content: '# Project Proposal\n\nStart writing your project proposal here...',
+      type: 'markdown',
+      lastEdited: Date.now()
+    };
+    const doc2 = {
+      name: 'app.js',
+      content: '// JavaScript Code\nconst greeting = "Hello, World!";\nconsole.log(greeting);',
+      type: 'javascript',
+      lastEdited: Date.now()
     };
 
-    simulatedUserTimeoutRef.current = setInterval(simulateUser, 3000);
-    return () => clearInterval(simulatedUserTimeoutRef.current);
-  }, [content.length]);
+    const docsRef = ref(database, 'documents');
+    const newDoc1Ref = push(docsRef);
+    const newDoc2Ref = push(docsRef);
+    
+    await set(newDoc1Ref, doc1);
+    await set(newDoc2Ref, doc2);
+  };
 
+  // Listen to active document content
+  useEffect(() => {
+    if (!activeDocId) return;
+
+    const docRef = ref(database, `documents/${activeDocId}`);
+    const unsubscribe = onValue(docRef, (snapshot) => {
+      const data = snapshot.val();
+      if (data && data.content !== undefined) {
+        isUpdatingFromFirebase.current = true;
+        setContent(data.content);
+        setTimeout(() => {
+          isUpdatingFromFirebase.current = false;
+        }, 100);
+      }
+    });
+
+    return () => unsubscribe();
+  }, [activeDocId]);
+
+  // Listen to users on active document
+  useEffect(() => {
+    if (!activeDocId || !userId) return;
+
+    // Add self to users
+    const userRef = ref(database, `users/${activeDocId}/${userId}`);
+    set(userRef, {
+      name: userName,
+      color: colors[Math.floor(Math.random() * colors.length)],
+      typing: false,
+      lastActive: Date.now()
+    });
+
+    // Listen to all users
+    const usersRef = ref(database, `users/${activeDocId}`);
+    const unsubscribe = onValue(usersRef, (snapshot) => {
+      const data = snapshot.val();
+      if (data) {
+        const usersList = Object.keys(data).map(key => ({
+          id: key,
+          ...data[key]
+        }));
+        setUsers(usersList);
+      }
+    });
+
+    // Cleanup on unmount or doc change
+    return () => {
+      remove(userRef);
+      unsubscribe();
+    };
+  }, [activeDocId, userId, userName]);
+
+  // Update typing status
+  const typingTimeoutRef = useRef(null);
   const handleContentChange = (e) => {
     const newContent = e.target.value;
     setContent(newContent);
-    
-    setDocuments(prev => prev.map(doc => 
-      doc.id === activeDocId 
-        ? { ...doc, content: newContent, lastEdited: new Date() }
-        : doc
-    ));
 
-    const cursorPos = e.target.selectionStart;
-    setUsers(prev => prev.map(u => 
-      u.id === 'you' ? { ...u, cursor: cursorPos, typing: true } : u
-    ));
+    if (isUpdatingFromFirebase.current) return;
 
-    setTimeout(() => {
-      setUsers(prev => prev.map(u => 
-        u.id === 'you' ? { ...u, typing: false } : u
-      ));
+    // Update document in Firebase
+    const docRef = ref(database, `documents/${activeDocId}`);
+    update(docRef, {
+      content: newContent,
+      lastEdited: Date.now()
+    });
+
+    // Update typing status
+    const userRef = ref(database, `users/${activeDocId}/${userId}`);
+    set(userRef, {
+      name: userName,
+      color: users.find(u => u.id === userId)?.color || colors[0],
+      typing: true,
+      lastActive: Date.now()
+    });
+
+    // Clear typing after 1 second
+    if (typingTimeoutRef.current) {
+      clearTimeout(typingTimeoutRef.current);
+    }
+    typingTimeoutRef.current = setTimeout(() => {
+      set(userRef, {
+        name: userName,
+        color: users.find(u => u.id === userId)?.color || colors[0],
+        typing: false,
+        lastActive: Date.now()
+      });
     }, 1000);
   };
 
@@ -102,43 +192,50 @@ function App() {
     setNewDocType('text');
   };
 
-  const confirmCreateDocument = () => {
+  const confirmCreateDocument = async () => {
     if (!newDocName.trim()) return;
     
     const extension = fileExtensions[newDocType];
     const fullName = newDocName.includes('.') ? newDocName : newDocName + extension;
     
     const newDoc = {
-      id: Date.now().toString(),
       name: fullName,
       content: fileTemplates[newDocType],
-      lastEdited: new Date(),
-      type: newDocType
+      type: newDocType,
+      lastEdited: Date.now()
     };
-    setDocuments(prev => [...prev, newDoc]);
-    setActiveDocId(newDoc.id);
+
+    const docsRef = ref(database, 'documents');
+    const newDocRef = push(docsRef);
+    await set(newDocRef, newDoc);
+    setActiveDocId(newDocRef.key);
     setShowNewDocModal(false);
   };
 
-  const deleteDocument = (docId) => {
+  const deleteDocument = async (docId) => {
     if (documents.length === 1) return;
-    setDocuments(prev => prev.filter(d => d.id !== docId));
+    
+    const docRef = ref(database, `documents/${docId}`);
+    await remove(docRef);
+    
     if (activeDocId === docId) {
-      setActiveDocId(documents[0].id === docId ? documents[1].id : documents[0].id);
+      const remaining = documents.filter(d => d.id !== docId);
+      if (remaining.length > 0) {
+        setActiveDocId(remaining[0].id);
+      }
     }
   };
 
-  const renameDocument = (docId, newName) => {
-    setDocuments(prev => prev.map(doc =>
-      doc.id === docId ? { ...doc, name: newName } : doc
-    ));
+  const renameDocument = async (docId, newName) => {
+    const docRef = ref(database, `documents/${docId}`);
+    await update(docRef, { name: newName });
   };
 
   const downloadDocument = () => {
     const doc = documents.find(d => d.id === activeDocId);
     if (!doc) return;
 
-    const blob = new Blob([doc.content], { type: 'text/plain' });
+    const blob = new Blob([content], { type: 'text/plain' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
@@ -153,11 +250,58 @@ function App() {
     setTimeout(() => setCopied(false), 2000);
   };
 
+  const shareDocument = () => {
+    const url = `${window.location.origin}${window.location.pathname}?doc=${activeDocId}`;
+    navigator.clipboard.writeText(url);
+    setShareLink(url);
+    setTimeout(() => setShareLink(''), 3000);
+  };
+
+  // Check for shared document in URL
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const docId = params.get('doc');
+    if (docId && documents.some(d => d.id === docId)) {
+      setActiveDocId(docId);
+    }
+  }, [documents]);
+
+  const updateUserName = async (newName) => {
+    setUserName(newName);
+    if (activeDocId && userId) {
+      const userRef = ref(database, `users/${activeDocId}/${userId}`);
+      await update(userRef, { name: newName });
+    }
+  };
+
   const activeDoc = documents.find(d => d.id === activeDocId);
   const isCodeFile = activeDoc?.type !== 'text' && activeDoc?.type !== 'markdown';
 
+  if (isLoading) {
+    return (
+      <div className="flex items-center justify-center h-screen bg-gray-50">
+        <div className="text-center">
+          <div className="w-16 h-16 border-4 border-blue-600 border-t-transparent rounded-full animate-spin mx-auto mb-4"></div>
+          <p className="text-gray-600">Loading CollabEdit...</p>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="flex h-screen bg-gray-50">
+      {/* Real-time Status Banner */}
+      <div className="fixed top-0 left-0 right-0 bg-green-50 border-b border-green-200 px-6 py-2 text-sm text-green-700 z-50 flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse"></div>
+          <span className="font-medium">🔥 Live Collaboration Active</span>
+          <span className="text-green-600">• Share this page with others to edit together!</span>
+        </div>
+        {shareLink && (
+          <span className="text-green-600 font-medium">✓ Share link copied!</span>
+        )}
+      </div>
+
       {/* New Document Modal */}
       {showNewDocModal && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
@@ -210,7 +354,7 @@ function App() {
       )}
 
       {/* Sidebar */}
-      <div className="w-64 bg-white border-r border-gray-200 flex flex-col">
+      <div className="w-64 bg-white border-r border-gray-200 flex flex-col mt-10">
         <div className="p-4 border-b border-gray-200">
           <div className="flex items-center gap-2 mb-4">
             <Edit3 className="text-blue-600" size={24} />
@@ -260,60 +404,60 @@ function App() {
         <div className="p-4 border-t border-gray-200">
           <div className="flex items-center gap-2 mb-3">
             <Users size={16} className="text-gray-500" />
-            <span className="text-sm font-semibold text-gray-700">Active Users</span>
+            <span className="text-sm font-semibold text-gray-700">
+              Active Users ({users.length})
+            </span>
           </div>
-          {users.map(user => (
-            <div key={user.id} className="flex items-center gap-2 mb-2">
-              <div
-                className="w-3 h-3 rounded-full relative"
-                style={{ backgroundColor: user.color }}
-              >
-                {user.typing && (
-                  <div className="absolute -top-1 -right-1 w-2 h-2 bg-green-500 rounded-full animate-pulse" />
-                )}
-              </div>
-              {user.id === 'you' && isEditingName ? (
-                <input
-                  type="text"
-                  value={userName}
-                  onChange={(e) => setUserName(e.target.value)}
-                  onBlur={() => {
-                    setIsEditingName(false);
-                    setUsers(prev => prev.map(u =>
-                      u.id === 'you' ? { ...u, name: userName } : u
-                    ));
-                  }}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter') {
-                      setIsEditingName(false);
-                      setUsers(prev => prev.map(u =>
-                        u.id === 'you' ? { ...u, name: userName } : u
-                      ));
-                    }
-                  }}
-                  className="text-sm flex-1 px-2 py-1 border border-blue-300 rounded"
-                  autoFocus
-                />
-              ) : (
-                <div className="flex-1">
-                  <span
-                    className="text-sm text-gray-600 cursor-pointer hover:text-blue-600"
-                    onClick={() => user.id === 'you' && setIsEditingName(true)}
-                  >
-                    {user.name}
-                  </span>
+          <div className="max-h-32 overflow-y-auto">
+            {users.map(user => (
+              <div key={user.id} className="flex items-center gap-2 mb-2">
+                <div
+                  className="w-3 h-3 rounded-full relative flex-shrink-0"
+                  style={{ backgroundColor: user.color }}
+                >
                   {user.typing && (
-                    <span className="text-xs text-green-600 ml-1">typing...</span>
+                    <div className="absolute -top-1 -right-1 w-2 h-2 bg-green-500 rounded-full animate-pulse" />
                   )}
                 </div>
-              )}
-            </div>
-          ))}
+                {user.id === userId && isEditingName ? (
+                  <input
+                    type="text"
+                    value={userName}
+                    onChange={(e) => setUserName(e.target.value)}
+                    onBlur={() => {
+                      setIsEditingName(false);
+                      updateUserName(userName);
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        setIsEditingName(false);
+                        updateUserName(userName);
+                      }
+                    }}
+                    className="text-sm flex-1 px-2 py-1 border border-blue-300 rounded"
+                    autoFocus
+                  />
+                ) : (
+                  <div className="flex-1 min-w-0">
+                    <span
+                      className="text-sm text-gray-600 cursor-pointer hover:text-blue-600 truncate block"
+                      onClick={() => user.id === userId && setIsEditingName(true)}
+                    >
+                      {user.name} {user.id === userId && '(you)'}
+                    </span>
+                    {user.typing && (
+                      <span className="text-xs text-green-600">typing...</span>
+                    )}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
         </div>
       </div>
 
       {/* Main Editor */}
-      <div className="flex-1 flex flex-col">
+      <div className="flex-1 flex flex-col mt-10">
         {/* Header */}
         <div className="bg-white border-b border-gray-200 px-6 py-4 flex items-center justify-between">
           <div className="flex-1">
@@ -324,11 +468,19 @@ function App() {
               className="text-2xl font-semibold text-gray-800 bg-transparent border-none outline-none focus:text-blue-600 w-full"
             />
             <p className="text-sm text-gray-500 mt-1">
-              Last edited: {activeDoc?.lastEdited.toLocaleTimeString()}
+              Last edited: {activeDoc?.lastEdited ? new Date(activeDoc.lastEdited).toLocaleTimeString() : 'Never'}
               {isCodeFile && <span className="ml-3 text-blue-600">• Code File</span>}
             </p>
           </div>
           <div className="flex gap-2">
+            <button
+              onClick={shareDocument}
+              className="flex items-center gap-2 px-4 py-2 text-white bg-green-600 hover:bg-green-700 rounded-lg transition-colors"
+              title="Share document"
+            >
+              <Share2 size={18} />
+              Share
+            </button>
             <button
               onClick={copyToClipboard}
               className="flex items-center gap-2 px-4 py-2 text-gray-700 hover:bg-gray-100 rounded-lg transition-colors"
@@ -358,7 +510,7 @@ function App() {
               className={`w-full h-full min-h-[600px] p-6 text-gray-800 leading-relaxed resize-none focus:outline-none bg-white rounded-lg shadow-sm border border-gray-200 focus:border-blue-400 focus:ring-2 focus:ring-blue-100 transition-all ${
                 isCodeFile ? 'font-mono text-sm' : 'text-lg'
               }`}
-              placeholder={isCodeFile ? "// Start coding..." : "Start typing... Changes sync in real-time across all users."}
+              placeholder={isCodeFile ? "// Start coding..." : "Start typing... Changes sync in real-time!"}
               style={{ fontFamily: isCodeFile ? 'monospace' : 'Georgia, serif' }}
               spellCheck={!isCodeFile}
             />
@@ -375,12 +527,12 @@ function App() {
           </div>
           <div className="flex items-center gap-2">
             <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse" />
-            <span>Connected • Auto-saving</span>
+            <span>Connected • Real-time Sync Active</span>
           </div>
         </div>
       </div>
     </div>
   );
-};
+}
 
 export default App;
