@@ -119,11 +119,3 @@ Notes: If `package.json` is missing, initialize a project with `npm init` or cre
 4. Open a pull request describing the change
 
 If you'd like, I can add a `CONTRIBUTING.md` and a default `LICENSE` (MIT).
-
-## Questions or help
-
-If anything in this README is unclear or you want me to add the `.env.example`, update `src/firebase.js` to use env vars, or generate a `package.json`, tell me which and I will implement it.
-
----
-
-Small request: would you like me to add a `.env.example` and update `src/firebase.js` to use those environment variables? I can make both changes now.
